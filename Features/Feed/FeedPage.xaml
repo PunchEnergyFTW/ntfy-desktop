@@ -14,6 +14,7 @@
         <converters:PriorityToBrushConverter x:Key="PriorityBrush" />
         <converters:RelativeTimeConverter x:Key="RelTime" />
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <converters:InverseBoolToVisibilityConverter x:Key="InverseBoolToVis" />
 
         <!-- Small icon button used for per-row actions on the feed (delete a single
              message). No chrome at rest, subtle background on hover. -->
@@ -100,7 +101,13 @@
                       SelectedItem="{Binding MinPriority}" />
         </Grid>
 
-        <Grid Margin="32,0,0,0">
+        <Grid x:Name="MainFeedGrid" Margin="32,0,0,0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <Grid Grid.Row="0" Grid.RowSpan="2">
             <StackPanel HorizontalAlignment="Center"
                         VerticalAlignment="Center"
                         MaxWidth="380"
@@ -124,10 +131,11 @@
                               Text="Nothing here yet. Messages arrive in real time once topics start sending." />
             </StackPanel>
 
-            <ListBox ItemsSource="{Binding Messages}"
+            <ListBox x:Name="MessagesList"
+                     ItemsSource="{Binding Messages}"
                      Background="Transparent"
                      BorderThickness="0"
-                     Padding="0"
+                     Padding="0,0,32,120"
                      HorizontalContentAlignment="Stretch"
                      ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                      ScrollViewer.VerticalScrollBarVisibility="Auto"
@@ -388,6 +396,298 @@
                     </DataTemplate>
                 </ListBox.ItemTemplate>
             </ListBox>
+            </Grid>
+
+            <!-- Chat Compose Card at the bottom -->
+            <Border x:Name="ComposeCardBorder"
+                    Grid.Row="1"
+                    Margin="0,16,32,16"
+                    BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="12"
+                    Background="{DynamicResource SolidBackgroundFillColorBaseBrush}"
+                    MaxHeight="{Binding ElementName=MainFeedGrid, Path=ActualHeight}"
+                    Visibility="{Binding IsTopicSelected, Converter={StaticResource BoolToVis}}">
+                <Border.Style>
+                    <Style TargetType="Border">
+                        <Setter Property="MaxWidth" Value="320" />
+                    </Style>
+                </Border.Style>
+                <Grid Margin="12">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" /> <!-- Error banner -->
+                        <RowDefinition Height="Auto" /> <!-- Options panel -->
+                        <RowDefinition Height="Auto" /> <!-- Body / Preview -->
+                        <RowDefinition Height="Auto" /> <!-- Toolbar -->
+                    </Grid.RowDefinitions>
+
+                    <!-- Error Banner -->
+                    <Border Grid.Row="0"
+                            Background="{DynamicResource SystemFillColorCriticalBackgroundBrush}"
+                            BorderBrush="{DynamicResource SystemStrokeColorCriticalBrush}"
+                            BorderThickness="1"
+                            CornerRadius="4"
+                            Padding="8,6"
+                            Margin="0,0,0,8"
+                            Visibility="{Binding IsPublishErrorVisible, Converter={StaticResource BoolToVis}}">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <ui:SymbolIcon Grid.Column="0"
+                                           Symbol="ErrorCircle24"
+                                           Foreground="{DynamicResource SystemStrokeColorCriticalBrush}"
+                                           VerticalAlignment="Center"
+                                           Margin="0,0,8,0" />
+                            <ui:TextBlock Grid.Column="1"
+                                          Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                                          VerticalAlignment="Center"
+                                          Text="{Binding PublishError}"
+                                          TextWrapping="Wrap" />
+                        </Grid>
+                    </Border>
+
+                    <!-- Options Panel -->
+                    <Border Grid.Row="1"
+                            x:Name="OptionsPanel"
+                            Height="0"
+                            ClipToBounds="True">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsPublishExpanded}" Value="True">
+                                        <DataTrigger.EnterActions>
+                                            <BeginStoryboard>
+                                                <Storyboard>
+                                                    <DoubleAnimation Storyboard.TargetProperty="Height"
+                                                                     To="150" Duration="0:0:0.25">
+                                                        <DoubleAnimation.EasingFunction>
+                                                            <PowerEase Power="3" EasingMode="EaseOut" />
+                                                        </DoubleAnimation.EasingFunction>
+                                                    </DoubleAnimation>
+                                                </Storyboard>
+                                            </BeginStoryboard>
+                                        </DataTrigger.EnterActions>
+                                        <DataTrigger.ExitActions>
+                                            <BeginStoryboard>
+                                                <Storyboard>
+                                                    <DoubleAnimation Storyboard.TargetProperty="Height"
+                                                                     To="0" Duration="0:0:0.2">
+                                                        <DoubleAnimation.EasingFunction>
+                                                            <PowerEase Power="3" EasingMode="EaseOut" />
+                                                        </DoubleAnimation.EasingFunction>
+                                                    </DoubleAnimation>
+                                                </Storyboard>
+                                            </BeginStoryboard>
+                                        </DataTrigger.ExitActions>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+
+                        <Grid Margin="0,0,0,12">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <!-- Title & Priority -->
+                            <Grid Grid.Row="0" Margin="0,0,0,8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="150" />
+                                </Grid.ColumnDefinitions>
+                                <ui:TextBox Grid.Column="0"
+                                            PlaceholderText="Title (optional)"
+                                            Text="{Binding ComposeTitle, UpdateSourceTrigger=PropertyChanged}"
+                                            IsEnabled="{Binding IsPublishing, Converter={StaticResource InverseBoolToVis}}" />
+                                <ComboBox Grid.Column="1"
+                                          Margin="12,0,0,0"
+                                          ItemsSource="{Binding Source={StaticResource Priorities}}"
+                                          SelectedItem="{Binding ComposePriority, Mode=TwoWay}"
+                                          IsEnabled="{Binding IsPublishing, Converter={StaticResource InverseBoolToVis}}" />
+                            </Grid>
+
+                            <!-- Tags & Click URL -->
+                            <Grid Grid.Row="1" Margin="0,0,0,8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <ui:TextBox Grid.Column="0"
+                                            PlaceholderText="Tags (e.g. warning, skull)"
+                                            Text="{Binding ComposeTags, UpdateSourceTrigger=PropertyChanged}"
+                                            IsEnabled="{Binding IsPublishing, Converter={StaticResource InverseBoolToVis}}" />
+                                <ui:TextBox Grid.Column="1"
+                                            Margin="12,0,0,0"
+                                            PlaceholderText="Click URL (optional)"
+                                            Text="{Binding ComposeClickUrl, UpdateSourceTrigger=PropertyChanged}"
+                                            IsEnabled="{Binding IsPublishing, Converter={StaticResource InverseBoolToVis}}" />
+                            </Grid>
+
+                            <!-- Markdown options -->
+                            <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,4,0,0">
+                                <ui:ToggleSwitch Content="Markdown formatting"
+                                                 IsChecked="{Binding ComposeIsMarkdown, Mode=TwoWay}"
+                                                 IsEnabled="{Binding IsPublishing, Converter={StaticResource InverseBoolToVis}}" />
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+
+                    <!-- Body / Preview -->
+                    <Grid Grid.Row="2">
+                        <!-- Write Editor -->
+                        <ui:TextBox x:Name="MessageInput"
+                                    Text="{Binding ComposeBody, UpdateSourceTrigger=PropertyChanged}"
+                                    PlaceholderText="Send a message..."
+                                    AcceptsReturn="True"
+                                    AcceptsTab="True"
+                                    TextWrapping="Wrap"
+                                    VerticalScrollBarVisibility="Auto"
+                                    IsEnabled="{Binding IsPublishing, Converter={StaticResource InverseBoolToVis}}"
+                                    Visibility="{Binding IsPreviewMode, Converter={StaticResource InverseBoolToVis}}">
+                            <ui:TextBox.Style>
+                                <Style TargetType="ui:TextBox" BasedOn="{StaticResource {x:Type ui:TextBox}}">
+                                    <Setter Property="MinHeight" Value="36" />
+                                    <Setter Property="MaxHeight" Value="36" />
+                                </Style>
+                            </ui:TextBox.Style>
+                        </ui:TextBox>
+
+                        <!-- Preview Panel -->
+                        <Border Padding="10,6"
+                                Background="Transparent"
+                                BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
+                                BorderThickness="1"
+                                CornerRadius="4"
+                                Visibility="{Binding IsPreviewMode, Converter={StaticResource BoolToVis}}">
+                            <Border.Style>
+                                <Style TargetType="Border">
+                                    <Setter Property="MinHeight" Value="56" />
+                                    <Setter Property="MaxHeight" Value="120" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsPublishExpanded}" Value="True">
+                                            <DataTrigger.EnterActions>
+                                                <BeginStoryboard>
+                                                    <Storyboard>
+                                                        <DoubleAnimation Storyboard.TargetProperty="MinHeight"
+                                                                         To="100" Duration="0:0:0.30">
+                                                            <DoubleAnimation.EasingFunction>
+                                                                <PowerEase Power="3" EasingMode="EaseOut" />
+                                                            </DoubleAnimation.EasingFunction>
+                                                        </DoubleAnimation>
+                                                        <DoubleAnimation Storyboard.TargetProperty="MaxHeight"
+                                                                         To="300" Duration="0:0:0.30">
+                                                            <DoubleAnimation.EasingFunction>
+                                                                <PowerEase Power="3" EasingMode="EaseOut" />
+                                                            </DoubleAnimation.EasingFunction>
+                                                        </DoubleAnimation>
+                                                    </Storyboard>
+                                                </BeginStoryboard>
+                                            </DataTrigger.EnterActions>
+                                            <DataTrigger.ExitActions>
+                                                <BeginStoryboard>
+                                                    <Storyboard>
+                                                        <DoubleAnimation Storyboard.TargetProperty="MinHeight"
+                                                                         To="56" Duration="0:0:0.25">
+                                                            <DoubleAnimation.EasingFunction>
+                                                                <PowerEase Power="3" EasingMode="EaseOut" />
+                                                            </DoubleAnimation.EasingFunction>
+                                                        </DoubleAnimation>
+                                                        <DoubleAnimation Storyboard.TargetProperty="MaxHeight"
+                                                                         To="120" Duration="0:0:0.25">
+                                                            <DoubleAnimation.EasingFunction>
+                                                                <PowerEase Power="3" EasingMode="EaseOut" />
+                                                            </DoubleAnimation.EasingFunction>
+                                                        </DoubleAnimation>
+                                                    </Storyboard>
+                                                </BeginStoryboard>
+                                            </DataTrigger.ExitActions>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Border.Style>
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel md:MarkdownBody.Text="{Binding ComposeBody}"
+                                            md:MarkdownBody.IsMarkdown="True" />
+                            </ScrollViewer>
+                        </Border>
+                    </Grid>
+
+                    <!-- Toolbar -->
+                    <Grid Grid.Row="3">
+                        <Grid.Style>
+                            <Style TargetType="Grid">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Setter Property="Margin" Value="0" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Path=IsKeyboardFocusWithin, ElementName=ComposeCardBorder}" Value="True">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                        <Setter Property="Margin" Value="0,8,0,0" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsPublishExpanded}" Value="True">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                        <Setter Property="Margin" Value="0,8,0,0" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Grid.Style>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <!-- Left Action Group -->
+                        <StackPanel Grid.Column="0" Orientation="Horizontal">
+                            <!-- Collapse Button -->
+                            <ui:Button Appearance="Transparent"
+                                       Padding="6"
+                                       Margin="0,0,4,0"
+                                       ToolTip="Collapse input"
+                                       Click="CollapseButton_Click"
+                                       IsEnabled="{Binding IsPublishing, Converter={StaticResource InverseBoolToVis}}">
+                                <ui:SymbolIcon Symbol="ChevronDown24" />
+                            </ui:Button>
+
+                            <!-- Toggle Options -->
+                            <ui:Button Appearance="Transparent"
+                                       Padding="6"
+                                       ToolTip="Options (Title, Priority, Tags...)"
+                                       Command="{Binding TogglePublishExpandedCommand}"
+                                       IsEnabled="{Binding IsPublishing, Converter={StaticResource InverseBoolToVis}}">
+                                <ui:SymbolIcon Symbol="Edit24" />
+                            </ui:Button>
+                        </StackPanel>
+
+                        <!-- Preview Toggle -->
+                        <ui:ToggleSwitch Grid.Column="1"
+                                         Content="Preview"
+                                         IsChecked="{Binding IsPreviewMode, Mode=TwoWay}"
+                                         Visibility="{Binding ComposeIsMarkdown, Converter={StaticResource BoolToVis}}"
+                                         IsEnabled="{Binding IsPublishing, Converter={StaticResource InverseBoolToVis}}"
+                                         Margin="8,0,0,0"
+                                         VerticalAlignment="Center" />
+
+                        <!-- Sending Indicator -->
+                        <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0"
+                                    Visibility="{Binding IsPublishing, Converter={StaticResource BoolToVis}}">
+                            <ui:ProgressRing IsIndeterminate="True" Width="16" Height="16" Margin="0,0,8,0" />
+                            <ui:TextBlock Foreground="{DynamicResource TextFillColorSecondaryBrush}" Text="Sending..." />
+                        </StackPanel>
+
+                        <!-- Send Button -->
+                        <ui:Button Grid.Column="3"
+                                   Appearance="Primary"
+                                   Content="Send"
+                                   Icon="{ui:SymbolIcon Send24}"
+                                   Command="{Binding SendMessageCommand}" />
+                    </Grid>
+                </Grid>
+            </Border>
         </Grid>
     </DockPanel>
 </Page>

@@ -29,6 +29,7 @@ public sealed partial class FeedViewModel : ObservableObject
     private readonly AppSettings _settings;
     private readonly AttachmentImageService _images;
     private readonly MessageActionInvoker _actions;
+    private readonly PublishService _publishService;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(Title))]
@@ -59,7 +60,7 @@ public sealed partial class FeedViewModel : ObservableObject
 
     public FeedViewModel(HistoryRepository history, ConnectionManager connections,
         NotificationGate gate, AppSettings settings, AttachmentImageService images,
-        MessageActionInvoker actions, EventBus bus)
+        MessageActionInvoker actions, PublishService publishService, EventBus bus)
     {
         _history = history;
         _connections = connections;
@@ -67,6 +68,7 @@ public sealed partial class FeedViewModel : ObservableObject
         _settings = settings;
         _images = images;
         _actions = actions;
+        _publishService = publishService;
 
         // All handlers run on the UI thread (the bus marshals), so they touch Messages
         // and observable state directly — no Dispatcher.Invoke here.
@@ -95,7 +97,19 @@ public sealed partial class FeedViewModel : ObservableObject
     {
         OnPropertyChanged(nameof(Title));
         OnPropertyChanged(nameof(Subtitle));
+        OnPropertyChanged(nameof(IsTopicSelected));
         RefreshReconnectVisibility();
+
+        // Reset compose state on topic change
+        ComposeBody = string.Empty;
+        ComposeTitle = string.Empty;
+        ComposePriority = Priority.Default;
+        ComposeTags = string.Empty;
+        ComposeClickUrl = string.Empty;
+        ComposeIsMarkdown = false;
+        IsPublishExpanded = false;
+        IsPreviewMode = false;
+        PublishError = string.Empty;
 
         _ = ReloadAsync();
     }
@@ -339,4 +353,83 @@ public sealed partial class FeedViewModel : ObservableObject
 
         Domain.SafeUrl.Open(url);
     }
+
+    #region Publish Message
+
+    [ObservableProperty] private bool _isPublishExpanded;
+
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(SendMessageCommand))]
+    private string _composeBody = string.Empty;
+
+    public bool HasComposeText => !string.IsNullOrEmpty(ComposeBody);
+    partial void OnComposeBodyChanged(string value) => OnPropertyChanged(nameof(HasComposeText));
+
+    [ObservableProperty] private string _composeTitle = string.Empty;
+    [ObservableProperty] private Priority _composePriority = Priority.Default;
+    [ObservableProperty] private string _composeTags = string.Empty;
+    [ObservableProperty] private string _composeClickUrl = string.Empty;
+    [ObservableProperty] private bool _composeIsMarkdown;
+
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(SendMessageCommand))]
+    private bool _isPublishing;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsPublishErrorVisible))]
+    private string _publishError = string.Empty;
+
+    [ObservableProperty] private bool _isPreviewMode;
+
+    public bool IsTopicSelected => CurrentTopicId != null;
+    public bool IsPublishErrorVisible => !string.IsNullOrEmpty(PublishError);
+    private bool CanSendMessage => !string.IsNullOrWhiteSpace(ComposeBody) && !IsPublishing;
+
+    [RelayCommand]
+    private void TogglePublishExpanded()
+    {
+        IsPublishExpanded = !IsPublishExpanded;
+    }
+
+    [RelayCommand(CanExecute = nameof(CanSendMessage))]
+    private async Task SendMessageAsync()
+    {
+        if (CurrentTopicId is not { } topicId) return;
+
+        IsPublishing = true;
+        PublishError = string.Empty;
+
+        try
+        {
+            await _publishService.PublishAsync(
+                topicId,
+                ComposeBody,
+                ComposeTitle,
+                ComposePriority,
+                ComposeTags,
+                ComposeClickUrl,
+                ComposeIsMarkdown
+            );
+
+            // Success: clear inputs
+            ComposeBody = string.Empty;
+            ComposeTitle = string.Empty;
+            ComposePriority = Priority.Default;
+            ComposeTags = string.Empty;
+            ComposeClickUrl = string.Empty;
+            ComposeIsMarkdown = false;
+            IsPublishExpanded = false;
+            IsPreviewMode = false;
+        }
+        catch (Exception ex)
+        {
+            PublishError = ex.Message;
+        }
+        finally
+        {
+            IsPublishing = false;
+        }
+    }
+
+    #endregion
 }
