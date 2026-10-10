@@ -36,7 +36,7 @@ public enum UpdateCheckResult
 // tray app, so the user shouldn't have to open the window to learn about updates.
 public sealed class UpdateService(EventBus bus, ToastNotifier toasts, AppSettings settings)
 {
-    private const string RepoUrl = "https://github.com/simoneferrari/ntfy-desktop";
+    private const string RepoUrl = "https://github.com/PunchEnergyFTW/ntfy-desktop";
 
     // Dev/test hook: point the updater at a local `vpk pack` output folder instead
     // of GitHub, so the full check → download → apply → restart flow can be exercised

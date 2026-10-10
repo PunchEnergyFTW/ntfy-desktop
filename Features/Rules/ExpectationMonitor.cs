@@ -35,6 +35,7 @@ public sealed class ExpectationMonitor : BackgroundService
         _history = history;
         _settings = settings;
         bus.Subscribe<MessageInserted>(this, e => OnMessageInserted(e.Message));
+        bus.Subscribe<MessageUpdated>(this, e => OnMessageInserted(e.Message));
     }
 
     private IEnumerable<ExpectRule> Rules() => _packs.Packs.SelectMany(p => p.ExpectRules);
@@ -119,7 +120,7 @@ public sealed class ExpectationMonitor : BackgroundService
 
         // Insert → MessageInserted (feed + unread). Then NtfyMessageReceived → toast
         // (honours pause / active-hours like any message). Not suppressed.
-        if (_history.Insert(synthetic, topicId, serverId))
+        if (_history.Insert(synthetic, topicId, serverId) != MessageSaveResult.Ignored)
             _ = new NtfyMessageReceived(synthetic, topicId).PublishAsync();
     }
 }

@@ -13,13 +13,15 @@ namespace NtfyDesktop.Features.Feed;
 /// open. Auto-discovered and registered via the messaging DI scan.
 /// </summary>
 public sealed class AttachmentPrefetchHandler(AttachmentImageService images, AppSettings settings)
-    : IEventHandler<MessageInserted>
+    : IEventHandler<MessageInserted>, IEventHandler<MessageUpdated>
 {
-    public Task HandleAsync(MessageInserted ev, CancellationToken ct)
+    public Task HandleAsync(MessageInserted ev, CancellationToken ct) => PrefetchAsync(ev.Message.Attachment, ev.Message.TopicId);
+    public Task HandleAsync(MessageUpdated ev, CancellationToken ct) => PrefetchAsync(ev.Message.Attachment, ev.Message.TopicId);
+
+    private Task PrefetchAsync(NtfyAttachment? attachment, Guid topicId)
     {
         if (!settings.AutoDownloadAttachments) return Task.CompletedTask;
 
-        var attachment = ev.Message.Attachment;
         if (attachment is null || !SafeUrl.IsAllowed(attachment.Url)) return Task.CompletedTask;
 
         var capBytes = (long)Math.Max(1, settings.AutoDownloadMaxFileMb) * 1024 * 1024;
@@ -31,7 +33,7 @@ public sealed class AttachmentPrefetchHandler(AttachmentImageService images, App
         // Fire-and-forget: the prefetch shouldn't hold up the publish pipeline. The service
         // caps concurrency and swallows failures, and CancellationToken.None decouples it from
         // the publish scope's lifetime.
-        _ = images.EnsureFileAsync(attachment, ev.Message.TopicId, CancellationToken.None, capBytes);
+        _ = images.EnsureFileAsync(attachment, topicId, CancellationToken.None, capBytes);
         return Task.CompletedTask;
     }
 }

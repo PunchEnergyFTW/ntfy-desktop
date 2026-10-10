@@ -9,9 +9,26 @@ using NtfyDesktop.Features.Settings;
 
 namespace NtfyDesktop.Features.History;
 
+public enum MessageSaveResult
+{
+    Ignored,
+    Inserted,
+    Updated,
+}
+
 public class HistoryRepository
 {
     private readonly string _dbPath;
+
+    /// <summary>Clears all stored messages and topic cursors. Useful for test cleanup.</summary>
+    public void ClearAll()
+    {
+        using var conn = Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "DELETE FROM messages; DELETE FROM topic_cursor;";
+        cmd.ExecuteNonQuery();
+    }
+
 
     // SQLite3MC encryption passphrase (DPAPI-wrapped at rest in settings.json). Every
     // connection is opened with it via the Password keyword, so history.db is encrypted on disk.
@@ -170,33 +187,113 @@ public class HistoryRepository
         }
     }
 
-    /// <summary>Stores a received message and advances the topic's catch-up cursor.
-    /// Returns <c>true</c> only when the row was genuinely new (a <c>since=</c> catch-up
-    /// re-delivers already-stored messages — callers use this to skip re-notifying).</summary>
-    public bool Insert(NtfyMessage message, Guid topicId, Guid serverId, bool suppressed = false)
+    /// <summary>Stores or updates a received message and advances the topic's catch-up cursor.
+    /// Returns <see cref="MessageSaveResult.Inserted"/> for a new row, <see cref="MessageSaveResult.Updated"/> when an existing
+    /// row's content was updated, or <see cref="MessageSaveResult.Ignored"/> when re-delivering an identical message.</summary>
+    public MessageSaveResult Insert(NtfyMessage message, Guid topicId, Guid serverId, bool suppressed = false, bool isBackfill = false)
     {
         using var conn = Open();
 
-        // A `since=<time>` catch-up is inclusive of its boundary second, so every reconnect
-        // re-delivers the cursor's own (most-recently-acknowledged) message. Normally the
-        // INSERT OR IGNORE below absorbs that. But if the user had *deleted* that message its
-        // row is gone, so the re-delivery would look brand new — resurrecting it in the feed
-        // and unread count and firing a phantom "while you were away" summary. The cursor
-        // records that id precisely so we can recognise the re-sent boundary message and drop
-        // it even after its row is deleted. (An empty cursor id — a freshly seeded baseline —
-        // matches nothing, so first-connect catch-up is unaffected.)
-        var cursorMessageId = ReadCursorMessageId(conn, topicId);
-        if (!string.IsNullOrEmpty(cursorMessageId) && message.Id == cursorMessageId)
-            return false;
+        var cursor = ReadCursor(conn, topicId);
+        var isCursorMessage = isBackfill &&
+                              cursor is not null &&
+                              !string.IsNullOrEmpty(cursor.Value.MessageId) &&
+                              message.EffectiveId == cursor.Value.MessageId &&
+                              message.Time <= cursor.Value.Time;
+
+        // Check if message already exists in database by message_id
+        using (var checkCmd = conn.CreateCommand())
+        {
+            checkCmd.CommandText = """
+                SELECT title, body, priority, tags, click, attachment, actions, content_type, suppressed
+                  FROM messages
+                 WHERE message_id = @mid
+                """;
+            checkCmd.Parameters.AddWithValue("@mid", message.EffectiveId);
+
+            using var reader = checkCmd.ExecuteReader();
+            if (reader.Read())
+            {
+                var existingTitle = reader.IsDBNull(0) ? null : reader.GetString(0);
+                var existingBody = reader.IsDBNull(1) ? null : reader.GetString(1);
+                var existingPriority = reader.GetInt32(2);
+                var existingTags = reader.IsDBNull(3) ? null : reader.GetString(3);
+                var existingClick = reader.IsDBNull(4) ? null : reader.GetString(4);
+                var existingAttachment = reader.IsDBNull(5) ? null : reader.GetString(5);
+                var existingActions = reader.IsDBNull(6) ? null : reader.GetString(6);
+                var existingContentType = reader.IsDBNull(7) ? null : reader.GetString(7);
+                var existingSuppressed = reader.GetInt32(8) != 0;
+
+                var newTags = message.Tags?.Count > 0 ? string.Join(",", message.Tags) : null;
+                var newAttachment = SerializeAttachment(message.Attachment);
+                var newActions = SerializeActions(message.Actions);
+
+                var changed = existingTitle != message.Title ||
+                              existingBody != message.Message ||
+                              existingPriority != (int)message.Priority ||
+                              existingTags != newTags ||
+                              existingClick != message.Click ||
+                              existingAttachment != newAttachment ||
+                              existingActions != newActions ||
+                              existingContentType != message.ContentType ||
+                              existingSuppressed != suppressed;
+
+                if (!changed)
+                {
+                    AdvanceCursor(conn, topicId, message.EffectiveId, message.Time);
+                    return MessageSaveResult.Ignored;
+                }
+
+                using var updateCmd = conn.CreateCommand();
+                updateCmd.CommandText = """
+                    UPDATE messages
+                       SET timestamp = @ts,
+                           priority = @priority,
+                           title = @title,
+                           body = @body,
+                           tags = @tags,
+                           click = @click,
+                           attachment = @attachment,
+                           actions = @actions,
+                           content_type = @contentType,
+                           suppressed = @suppressed
+                     WHERE message_id = @mid
+                    """;
+                updateCmd.Parameters.AddWithValue("@mid", message.EffectiveId);
+                updateCmd.Parameters.AddWithValue("@ts", message.Time);
+                updateCmd.Parameters.AddWithValue("@priority", (int)message.Priority);
+                updateCmd.Parameters.AddWithValue("@title", (object?)message.Title ?? DBNull.Value);
+                updateCmd.Parameters.AddWithValue("@body", (object?)message.Message ?? DBNull.Value);
+                updateCmd.Parameters.AddWithValue("@tags", (object?)newTags ?? DBNull.Value);
+                updateCmd.Parameters.AddWithValue("@click", (object?)message.Click ?? DBNull.Value);
+                updateCmd.Parameters.AddWithValue("@attachment", (object?)newAttachment ?? DBNull.Value);
+                updateCmd.Parameters.AddWithValue("@actions", (object?)newActions ?? DBNull.Value);
+                updateCmd.Parameters.AddWithValue("@contentType", (object?)message.ContentType ?? DBNull.Value);
+                updateCmd.Parameters.AddWithValue("@suppressed", suppressed ? 1 : 0);
+                updateCmd.ExecuteNonQuery();
+
+                AdvanceCursor(conn, topicId, message.EffectiveId, message.Time);
+
+                var updatedMsg = ToHistoryMessage(message, topicId, suppressed);
+                _ = new MessageUpdated(updatedMsg).PublishAsync();
+
+                return MessageSaveResult.Updated;
+            }
+        }
+
+        // A `since=<time>` catch-up re-delivers the cursor's own message. If deleted from DB,
+        // ignore it so it doesn't resurrect.
+        if (isCursorMessage)
+            return MessageSaveResult.Ignored;
 
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT OR IGNORE INTO messages
+            INSERT INTO messages
                 (message_id, topic, topic_id, server_id, timestamp, priority, title, body, tags, click, attachment, actions, content_type, suppressed)
             VALUES
                 (@mid, @topic, @topicId, @serverId, @ts, @priority, @title, @body, @tags, @click, @attachment, @actions, @contentType, @suppressed)
             """;
-        cmd.Parameters.AddWithValue("@mid", message.Id);
+        cmd.Parameters.AddWithValue("@mid", message.EffectiveId);
         cmd.Parameters.AddWithValue("@topic", message.Topic);
         cmd.Parameters.AddWithValue("@topicId", topicId.ToString());
         cmd.Parameters.AddWithValue("@serverId", serverId.ToString());
@@ -211,23 +308,14 @@ public class HistoryRepository
         cmd.Parameters.AddWithValue("@actions", (object?)SerializeActions(message.Actions) ?? DBNull.Value);
         cmd.Parameters.AddWithValue("@contentType", (object?)message.ContentType ?? DBNull.Value);
         cmd.Parameters.AddWithValue("@suppressed", suppressed ? 1 : 0);
-        var inserted = cmd.ExecuteNonQuery() > 0; // INSERT OR IGNORE → 0 when message_id already stored
+        cmd.ExecuteNonQuery();
 
-        // Advance the topic's catch-up cursor (forward only). Runs even when the row was
-        // an IGNORE'd duplicate — we've still acknowledged seeing this id from the server.
-        // Independent of retention/deletes, which never touch topic_cursor.
-        AdvanceCursor(conn, topicId, message.Id, message.Time);
-
-        // Only announce genuinely-new rows. A `since=<time>` catch-up is inclusive of its
-        // boundary second, so it re-delivers already-stored messages; without this guard the
-        // feed and unread count (neither dedupes on message id) would double-count them.
-        if (!inserted) return false;
+        AdvanceCursor(conn, topicId, message.EffectiveId, message.Time);
 
         var histMsg = ToHistoryMessage(message, topicId, suppressed);
         _ = new MessageInserted(histMsg).PublishAsync();
 
-        // Retention sweeps run on a timer in HistoryRetentionService, not per-Insert.
-        return true;
+        return MessageSaveResult.Inserted;
     }
 
     /// <summary>
@@ -253,15 +341,23 @@ public class HistoryRepository
 
     // The message id of a topic's current catch-up cursor (the last id we acknowledged
     // from the server), or null when the topic has no cursor. Empty string for a seeded
-    // baseline that has never advanced to a real message. Used by Insert to drop the
-    // re-delivered boundary message — see the note there.
-    private static string? ReadCursorMessageId(SqliteConnection conn, Guid topicId)
+    // The message id and timestamp of a topic's current catch-up cursor (the last message we
+    // acknowledged from the server), or null when the topic has no cursor. Used by Insert to drop the
+    // re-delivered boundary message during reconnect catch-up — see the note there.
+    private static (string MessageId, long Time)? ReadCursor(SqliteConnection conn, Guid topicId)
     {
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT message_id FROM topic_cursor WHERE topic_id = @id";
+        cmd.CommandText = "SELECT message_id, time FROM topic_cursor WHERE topic_id = @id";
         cmd.Parameters.AddWithValue("@id", topicId.ToString());
-        var result = cmd.ExecuteScalar();
-        return result is null or DBNull ? null : (string)result;
+        using var reader = cmd.ExecuteReader();
+        if (reader.Read())
+        {
+            var mid = reader.IsDBNull(0) ? null : reader.GetString(0);
+            var time = reader.IsDBNull(1) ? 0L : reader.GetInt64(1);
+            if (!string.IsNullOrEmpty(mid))
+                return (mid, time);
+        }
+        return null;
     }
 
     private static void AdvanceCursor(SqliteConnection conn, Guid topicId, string messageId, long time)
@@ -616,7 +712,7 @@ public class HistoryRepository
 
     private static HistoryMessage ToHistoryMessage(NtfyMessage m, Guid topicId, bool suppressed) => new()
     {
-        MessageId = m.Id,
+        MessageId = m.EffectiveId,
         Topic = m.Topic,
         TopicId = topicId,
         Timestamp = m.Timestamp,

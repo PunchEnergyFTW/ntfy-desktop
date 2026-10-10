@@ -73,6 +73,7 @@ public sealed partial class FeedViewModel : ObservableObject
         // All handlers run on the UI thread (the bus marshals), so they touch Messages
         // and observable state directly — no Dispatcher.Invoke here.
         bus.Subscribe<MessageInserted>(this, e => OnMessageInserted(e.Message), ThreadOption.UIThread);
+        bus.Subscribe<MessageUpdated>(this, e => OnMessageUpdated(e.Message), ThreadOption.UIThread);
         bus.Subscribe<MessagesDeleted>(this, OnMessagesDeleted, ThreadOption.UIThread);
         // A message was retroactively hidden (a problem folded by its resolution).
         bus.Subscribe<MessageSuppressed>(this, OnMessageSuppressed, ThreadOption.UIThread);
@@ -185,6 +186,38 @@ public sealed partial class FeedViewModel : ObservableObject
         while (Messages.Count > MAX_DISPLAYED)
             Messages.RemoveAt(Messages.Count - 1);
         IsEmpty = false;
+    }
+
+    private void OnMessageUpdated(HistoryMessage updated)
+    {
+        if (CurrentTopicId is { } id && updated.TopicId != id) return;
+
+        var existing = Messages.FirstOrDefault(m => m.MessageId == updated.MessageId);
+        if (existing is not null)
+        {
+            if (updated.Priority < MinPriority ||
+                (updated.Suppressed && !ShowSuppressed) ||
+                (!string.IsNullOrWhiteSpace(SearchText) && !Matches(updated, SearchText)))
+            {
+                Messages.Remove(existing);
+                IsEmpty = Messages.Count == 0;
+                return;
+            }
+
+            existing.UpdateFrom(updated);
+            Enrich(existing, allTopics: CurrentTopicId is null);
+
+            if (updated.HasImageAttachment)
+            {
+                existing.ImageLoadStarted = false;
+                existing.AttachmentImage = null;
+                EnsureAttachmentLoaded(existing);
+            }
+        }
+        else
+        {
+            OnMessageInserted(updated);
+        }
     }
 
     private void OnMessagesDeleted(MessagesDeleted e)

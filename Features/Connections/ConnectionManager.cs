@@ -284,15 +284,13 @@ public sealed class ConnectionManager : IAsyncDisposable
         // incident-store writes are applied below only for genuinely-new messages.
         var verdict = _rules.Evaluate(incoming.Message);
 
-        // Insert is INSERT-OR-IGNORE and reports novelty. A `since=<time>` catch-up is
-        // inclusive of its boundary, so it re-delivers messages we already have — those
-        // aren't new and must not reach the toast/summary path (the only consumer of
-        // NtfyMessageReceived), or every reconnect would show a phantom "while you were
-        // away" summary for the re-sent boundary message.
-        var isNew = _history.Insert(incoming.Message, conn.TopicId, serverId, verdict.HideFromFeed);
-        if (!isNew) return;
+        // Insert stores new messages or updates changed ones and reports the outcome.
+        // A `since=<time>` catch-up is inclusive of its boundary, so it re-delivers identical
+        // messages we already have — those return MessageSaveResult.Ignored.
+        var saveResult = _history.Insert(incoming.Message, conn.TopicId, serverId, verdict.HideFromFeed, incoming.IsBackfill);
+        if (saveResult == MessageSaveResult.Ignored) return;
 
-        // Apply incident side-effects (open/resolve) once, for the new message only.
+        // Apply incident side-effects (open/resolve) once, for new or updated messages.
         _rules.ApplyIncidentSideEffects(verdict);
 
         // A resolution folds its problem out of the feed: retroactively hide that row.

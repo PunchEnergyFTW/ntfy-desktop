@@ -42,10 +42,19 @@ public sealed record NtfyMessage
     [JsonPropertyName("actions")]
     public List<NtfyAction>? Actions { get; init; }
 
+    [JsonPropertyName("sequence_id")]
+    public string? SequenceId { get; init; }
+
     [JsonPropertyName("expires")]
     public long? Expires { get; init; }
 
     public DateTimeOffset Timestamp => DateTimeOffset.FromUnixTimeSeconds(Time);
+
+    /// <summary>
+    /// Returns <see cref="SequenceId"/> if present (for messages updated via custom sequence ID / URL path),
+    /// otherwise falls back to the server-generated <see cref="Id"/>.
+    /// </summary>
+    public string EffectiveId => !string.IsNullOrWhiteSpace(SequenceId) ? SequenceId : Id;
 
     /// <summary>ntfy flagged this body as Markdown (content_type == "text/markdown").</summary>
     public bool IsMarkdown =>

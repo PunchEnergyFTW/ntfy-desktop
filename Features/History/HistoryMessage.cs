@@ -120,4 +120,44 @@ public partial class HistoryMessage : ObservableObject
             return string.IsNullOrEmpty(TagEmojis) ? baseTitle : $"{TagEmojis} {baseTitle}";
         }
     }
+
+    /// <summary>
+    /// Updates all message content properties in-place from an updated instance and raises
+    /// property change notifications so WPF data bindings update automatically.
+    /// </summary>
+    public void UpdateFrom(HistoryMessage updated)
+    {
+        Timestamp = updated.Timestamp;
+        Priority = updated.Priority;
+        Title = updated.Title;
+        Body = updated.Body;
+        ContentType = updated.ContentType;
+        Tags = updated.Tags;
+        Click = updated.Click;
+        Suppressed = updated.Suppressed;
+        Attachment = updated.Attachment;
+        Actions = updated.Actions;
+        _tagDisplay = null;
+
+        OnPropertyChanged(nameof(Timestamp));
+        OnPropertyChanged(nameof(Priority));
+        OnPropertyChanged(nameof(Title));
+        OnPropertyChanged(nameof(Body));
+        OnPropertyChanged(nameof(ContentType));
+        OnPropertyChanged(nameof(IsMarkdown));
+        OnPropertyChanged(nameof(Tags));
+        OnPropertyChanged(nameof(TagEmojis));
+        OnPropertyChanged(nameof(TagLabels));
+        OnPropertyChanged(nameof(DisplayTitle));
+        OnPropertyChanged(nameof(Click));
+        OnPropertyChanged(nameof(HasClick));
+        OnPropertyChanged(nameof(Suppressed));
+        OnPropertyChanged(nameof(Attachment));
+        OnPropertyChanged(nameof(HasImageAttachment));
+        OnPropertyChanged(nameof(HasFileAttachment));
+        OnPropertyChanged(nameof(AttachmentLabel));
+        OnPropertyChanged(nameof(Actions));
+        OnPropertyChanged(nameof(HasActions));
+    }
 }
+
