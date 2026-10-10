@@ -1,6 +1,7 @@
 name: Release
 
 on:
+  workflow_dispatch:
   push:
     tags:
       - 'v*'
@@ -83,7 +84,7 @@ jobs:
           -i assets/app.ico
           -c ${{ steps.version.outputs.channel }}
           --packTitle "ntfy Desktop"
-          --packAuthors "Simone Ferrari"
+          --packAuthors "PunchEnergyFTW"
 
       - name: Scan with VirusTotal
         id: vt
